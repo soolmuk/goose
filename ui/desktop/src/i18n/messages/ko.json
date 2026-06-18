@@ -992,6 +992,9 @@
   "elicitationRequest.submit": {
     "defaultMessage": "제출"
   },
+  "elicitationRequest.submitError": {
+    "defaultMessage": "이 요청은 더 이상 활성 상태가 아닙니다. 익스텐션에서 다시 요청해야 합니다."
+  },
   "elicitationRequest.submitted": {
     "defaultMessage": "제출된 정보"
   },
