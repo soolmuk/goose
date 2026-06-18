@@ -4097,6 +4097,9 @@
   "settings.language.japanese": {
     "defaultMessage": "日语"
   },
+  "settings.language.korean": {
+    "defaultMessage": "韩语"
+  },
   "settings.language.russian": {
     "defaultMessage": "俄语"
   },
