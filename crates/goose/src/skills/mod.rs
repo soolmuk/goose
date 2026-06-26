@@ -8,7 +8,7 @@ pub mod client;
 
 pub use client::{SkillsClient, EXTENSION_NAME};
 
-use crate::config::paths::Paths;
+use crate::config::{paths::Paths, Config};
 use crate::plugins::installed_plugin_skill_dirs;
 use crate::sources::parse_frontmatter;
 use agent_client_protocol::Error;
@@ -99,11 +99,38 @@ pub(crate) fn validate_skill_name(name: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn loaded_skill_context(skill: &SourceEntry, content: &str) -> String {
+fn docs_root_config_instruction_for_root(
+    skill: &SourceEntry,
+    docs_root: Option<String>,
+) -> Option<String> {
+    if skill.name != "goose-doc-guide" || skill.source_type != SourceType::BuiltinSkill {
+        return None;
+    }
+
+    docs_root.map(|root| {
+        let root = serde_json::to_string(&root).unwrap_or_else(|_| "\"\"".to_string());
+        format!("\n\nEffective configured docs root: {root}. Use this exact JSON string value as the docs root.")
+    })
+}
+
+fn docs_root_config_instruction(skill: &SourceEntry) -> Result<Option<String>> {
+    if skill.name != "goose-doc-guide" || skill.source_type != SourceType::BuiltinSkill {
+        return Ok(None);
+    }
+
+    Ok(docs_root_config_instruction_for_root(
+        skill,
+        Config::global().get_goose_docs_root()?,
+    ))
+}
+
+fn loaded_skill_context(skill: &SourceEntry, content: &str) -> Result<String> {
     let title = format!("{} ({})", skill.name, skill.source_type);
     let mut output = format!(
-        "# Loaded Skill: {title}\n\n{}\n\n## Content\n\n{}\n",
-        skill.description, content
+        "# Loaded Skill: {title}\n\n{}{}\n\n## Content\n\n{}\n",
+        skill.description,
+        docs_root_config_instruction(skill)?.unwrap_or_default(),
+        content
     );
 
     if !skill.supporting_files.is_empty() {
@@ -128,7 +155,7 @@ fn loaded_skill_context(skill: &SourceEntry, content: &str) -> String {
         }
     }
 
-    output
+    Ok(output)
 }
 
 pub fn loaded_skill_context_with_args(skill: &SourceEntry, args: Option<&str>) -> Result<String> {
@@ -138,7 +165,7 @@ pub fn loaded_skill_context_with_args(skill: &SourceEntry, args: Option<&str>) -
         skill.content.clone()
     };
 
-    Ok(loaded_skill_context(skill, &content))
+    loaded_skill_context(skill, &content)
 }
 
 pub fn skill_argument_hint(skill: &SourceEntry) -> Option<String> {
@@ -518,6 +545,20 @@ mod tests {
         }
     }
 
+    fn builtin_goose_doc_guide_skill() -> SourceEntry {
+        SourceEntry {
+            source_type: SourceType::BuiltinSkill,
+            name: "goose-doc-guide".to_string(),
+            description: "Test docs skill".to_string(),
+            content: "Read docs.".to_string(),
+            path: "builtin://skills/goose-doc-guide".to_string(),
+            global: true,
+            writable: true,
+            supporting_files: Vec::new(),
+            properties: HashMap::new(),
+        }
+    }
+
     #[test]
     fn loaded_skill_context_with_args_replaces_arguments_placeholder_with_raw_args() {
         let skill = skill_with_content("Review $ARGUMENTS carefully.");
@@ -552,5 +593,27 @@ mod tests {
         assert!(rendered.contains("scripts/my-tool.exe"));
         assert!(rendered.contains(&resolved_path));
         assert!(rendered.contains("load_skill(name: \"test-skill/scripts/my-tool.exe\")"));
+    }
+
+    #[test]
+    fn docs_root_config_instruction_includes_builtin_goose_doc_guide_config_root() {
+        let skill = builtin_goose_doc_guide_skill();
+        let instruction =
+            docs_root_config_instruction_for_root(&skill, Some("/tmp/goose docs/root".to_string()))
+                .unwrap();
+
+        assert!(instruction.contains("Effective configured docs root"));
+        assert!(instruction.contains("\"/tmp/goose docs/root\""));
+    }
+
+    #[test]
+    fn docs_root_config_instruction_ignores_non_builtin_goose_doc_guide_skills() {
+        let mut skill = builtin_goose_doc_guide_skill();
+        skill.source_type = SourceType::Skill;
+
+        assert!(
+            docs_root_config_instruction_for_root(&skill, Some("/tmp/goose-docs".to_string()))
+                .is_none()
+        );
     }
 }
