@@ -1,0 +1,104 @@
+name: Docs Bundle
+
+on:
+  workflow_call:
+    inputs:
+      force_build:
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches:
+      - main
+      - "release/*"
+    paths:
+      - "documentation/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write      # Required for updating canary release assets and by actions/checkout
+  id-token: write      # Required for SLSA build provenance attestations
+  attestations: write  # Required for SLSA build provenance attestations
+
+concurrency:
+  group: docs-bundle-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs-bundle:
+    name: Build Docs Bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether to build docs bundle
+        id: build-decision
+        env:
+          FORCE_BUILD: ${{ inputs.force_build || github.event_name == 'workflow_dispatch' }}
+        run: |
+          if [ "$FORCE_BUILD" = "true" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          before="${{ github.event.before }}"
+          zero_sha="0000000000000000000000000000000000000000"
+
+          if [ "$before" = "$zero_sha" ]; then
+            changed_files=$(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")
+          else
+            changed_files=$(git diff --name-only "$before" "$GITHUB_SHA")
+          fi
+
+          printf 'Changed files:\n%s\n' "$changed_files"
+
+          if [ -n "$changed_files" ] && ! printf '%s\n' "$changed_files" | grep -qv '^documentation/'; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node.js
+        if: steps.build-decision.outputs.should_build == 'true'
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: 20
+
+      - name: Install documentation dependencies
+        if: steps.build-decision.outputs.should_build == 'true'
+        working-directory: ./documentation
+        run: npm ci
+
+      - name: Generate docs bundle
+        if: steps.build-decision.outputs.should_build == 'true'
+        working-directory: ./documentation
+        run: |
+          node scripts/generate-docs-map.js
+          node scripts/generate-docs-bundle.js
+
+      - name: Upload docs bundle artifact
+        if: steps.build-decision.outputs.should_build == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: goose-docs
+          path: documentation/goose-docs.tar.gz
+          if-no-files-found: error
+
+      - name: Attest docs bundle provenance
+        if: steps.build-decision.outputs.should_build == 'true' && inputs.force_build != true
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
+        with:
+          subject-path: documentation/goose-docs.tar.gz
+
+      - name: Publish docs bundle to canary release
+        if: steps.build-decision.outputs.should_build == 'true' && inputs.force_build != true && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view canary --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload canary documentation/goose-docs.tar.gz --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            echo "Canary release does not exist; skipping release asset upload."
+          fi
